@@ -82,7 +82,7 @@ func (h *WebhookHandler) Handle(c *echo.Context) error {
 		if len(payload) < 16 {
 			sampleLen = len(payload)
 		}
-		slog.Error("failed to verify stripe signature", 
+		slog.Error("failed to verify stripe signature",
 			"error", err,
 			"payloadSample", string(payload[:sampleLen]))
 		return c.NoContent(http.StatusBadRequest)
@@ -103,7 +103,7 @@ func (h *WebhookHandler) Handle(c *echo.Context) error {
 	go func(evt stripe.Event) {
 		// Use background context for async processing
 		ctx := context.Background()
-		
+
 		err := h.processEvent(ctx, evt)
 		if err != nil {
 			slog.Error("failed to process stripe event", "eventID", evt.ID, "type", evt.Type, "error", err)
@@ -114,7 +114,7 @@ func (h *WebhookHandler) Handle(c *echo.Context) error {
 		if err := h.eventRepo.Save(ctx, evt.ID); err != nil {
 			slog.Error("failed to save processed stripe event", "eventID", evt.ID, "error", err)
 		}
-		
+
 		slog.Info("successfully processed stripe event", "eventID", evt.ID, "type", evt.Type)
 	}(event)
 
@@ -171,7 +171,7 @@ func (h *WebhookHandler) handleCheckoutSessionCompleted(ctx context.Context, eve
 			if err != nil {
 				return fmt.Errorf("get wallet: %w", err)
 			}
-			
+
 			creditsStr := item.Metadata["credits"]
 			storageGbStr := item.Metadata["storage_gb"]
 			itemType := item.Metadata["type"]
@@ -180,7 +180,7 @@ func (h *WebhookHandler) handleCheckoutSessionCompleted(ctx context.Context, eve
 				var credits int
 				fmt.Sscanf(creditsStr, "%d", &credits)
 				totalCredits := item.Quantity * credits
-				
+
 				pack := domain.CreditPack{
 					ID:              fmt.Sprintf("cp_%d", time.Now().UnixNano()),
 					TotalAmount:     totalCredits,
@@ -195,7 +195,7 @@ func (h *WebhookHandler) handleCheckoutSessionCompleted(ctx context.Context, eve
 				// For now, we'll just track it as a pack
 				var storageGb float64
 				fmt.Sscanf(storageGbStr, "%f", &storageGb)
-				
+
 				pack := domain.CreditPack{
 					ID:              fmt.Sprintf("sp_%d", time.Now().UnixNano()),
 					TotalAmount:     int(storageGb * 1024 * 1024 * 1024), // Convert GB to bytes
@@ -404,18 +404,35 @@ func (h *WebhookHandler) syncSubscriptionData(ctx context.Context, stripeSubID s
 	subType := sub.Metadata["sub_type"]
 	slog.Debug("identified sub_type from metadata", "subType", subType, "stripeSubID", stripeSubID)
 
+	// Track whether incoming Stripe subscription contains a plan product.
+	hasPlanProduct := false
+	for _, item := range sub.Items.Data {
+		if item.Price != nil && item.Price.Product != nil {
+			p := item.Price.Product
+			if p.Metadata["type"] == "plan" || p.Metadata["plan_type"] != "" {
+				hasPlanProduct = true
+				break
+			}
+		}
+	}
+
 	// Fallback to product metadata if sub_type is missing (e.g. from direct Stripe CLI or older sessions)
 	if subType == "" && len(sub.Items.Data) > 0 {
 		item := sub.Items.Data[0]
 		if item.Price != nil && item.Price.Product != nil {
 			p := item.Price.Product
-			if p.Metadata["plan_type"] != "" {
+			if p.Metadata["type"] == "plan" || p.Metadata["plan_type"] != "" {
 				subType = "plan"
 			} else if p.Metadata["addon_type"] == "storage" {
 				subType = "storage"
 			}
 			slog.Debug("inferred sub_type from product metadata", "subType", subType, "stripeSubID", stripeSubID)
 		}
+	}
+
+	// Force type to plan if product metadata clearly marks this subscription as plan.
+	if hasPlanProduct {
+		subType = "plan"
 	}
 
 	existingSub, _ := h.subRepo.GetByUserID(ctx, userID)
@@ -428,6 +445,9 @@ func (h *WebhookHandler) syncSubscriptionData(ctx context.Context, stripeSubID s
 		}
 	}
 
+	prevPlanSubID := existingSub.StripePlanSubscriptionID
+	prevStorageSubID := existingSub.StripeStorageSubscriptionID
+
 	// Calculate status
 	status := domain.StatusCanceled
 	if sub.Status == stripe.SubscriptionStatusActive || sub.Status == stripe.SubscriptionStatusTrialing {
@@ -438,20 +458,32 @@ func (h *WebhookHandler) syncSubscriptionData(ctx context.Context, stripeSubID s
 
 	// Handle replacement and limit updates based on subType
 	if subType == "plan" {
+		isActiveLikePlan := status == domain.StatusActive || status == domain.StatusIncomplete
+
 		// Only replace if it's a DIFFERENT subscription
-		if existingSub.StripePlanSubscriptionID != "" && existingSub.StripePlanSubscriptionID != sub.ID {
-			slog.Info("replacing old plan subscription", "userID", userID, "oldSubID", existingSub.StripePlanSubscriptionID, "newSubID", sub.ID)
-			h.stripePort.CancelSubscription(ctx, existingSub.StripePlanSubscriptionID)
+		if isActiveLikePlan && prevPlanSubID != "" && prevPlanSubID != sub.ID {
+			slog.Info("replacing old plan subscription", "userID", userID, "oldSubID", prevPlanSubID, "newSubID", sub.ID)
+			h.stripePort.CancelSubscription(ctx, prevPlanSubID)
 		}
-		existingSub.StripePlanSubscriptionID = sub.ID
+
+		if isActiveLikePlan {
+			existingSub.StripePlanSubscriptionID = sub.ID
+		}
 
 		// Update limits from plan product metadata if active
 		if status == domain.StatusActive {
 			for _, item := range sub.Items.Data {
 				if item.Price != nil && item.Price.Product != nil {
 					p := item.Price.Product
-					if p.Metadata["plan_type"] != "" {
-						existingSub.PlanID = p.Metadata["plan_type"]
+					if p.Metadata["type"] == "plan" || p.Metadata["plan_type"] != "" {
+						planID := p.Metadata["plan_type"]
+						if planID == "" {
+							planID = p.Metadata["plan_id"]
+						}
+						if planID == "" {
+							planID = p.ID
+						}
+						existingSub.PlanID = planID
 						// Use product name as human-readable plan name
 						if p.Name != "" {
 							existingSub.PlanName = p.Name
@@ -467,10 +499,9 @@ func (h *WebhookHandler) syncSubscriptionData(ctx context.Context, stripeSubID s
 				}
 			}
 		} else {
-			// Only revert to free if this specific sub is STILL our tracked plan sub.
-			// If the user already switched plans, StripePlanSubscriptionID has moved on
-			// and we must NOT downgrade their limits via the old cancelled sub.
-			if existingSub.StripePlanSubscriptionID == sub.ID {
+			// Only revert to free if this canceled sub is the currently tracked plan.
+			if prevPlanSubID == sub.ID {
+				existingSub.StripePlanSubscriptionID = ""
 				existingSub.PlanID = "Free"
 				existingSub.PlanName = "Free Plan"
 				existingSub.BaseAILimit = 100
@@ -479,12 +510,17 @@ func (h *WebhookHandler) syncSubscriptionData(ctx context.Context, stripeSubID s
 		}
 
 	} else if subType == "storage" {
+		isActiveLikeStorage := status == domain.StatusActive || status == domain.StatusIncomplete
+
 		// Only replace if it's a DIFFERENT subscription
-		if existingSub.StripeStorageSubscriptionID != "" && existingSub.StripeStorageSubscriptionID != sub.ID {
-			slog.Info("replacing old storage subscription", "userID", userID, "oldSubID", existingSub.StripeStorageSubscriptionID, "newSubID", sub.ID)
-			h.stripePort.CancelSubscription(ctx, existingSub.StripeStorageSubscriptionID)
+		if isActiveLikeStorage && prevStorageSubID != "" && prevStorageSubID != sub.ID {
+			slog.Info("replacing old storage subscription", "userID", userID, "oldSubID", prevStorageSubID, "newSubID", sub.ID)
+			h.stripePort.CancelSubscription(ctx, prevStorageSubID)
 		}
-		existingSub.StripeStorageSubscriptionID = sub.ID
+
+		if isActiveLikeStorage {
+			existingSub.StripeStorageSubscriptionID = sub.ID
+		}
 
 		// Update addon quota from storage product metadata if active
 		if status == domain.StatusActive {
@@ -505,29 +541,18 @@ func (h *WebhookHandler) syncSubscriptionData(ctx context.Context, stripeSubID s
 		}
 	}
 
-	// Common updates
-	// Update status smarter: only set to canceled if no active subs remain
-	// Or if the incoming sub is the main one and it's active
-	if status == domain.StatusActive {
-		existingSub.Status = domain.StatusActive
-		existingSub.StripeSubscriptionID = sub.ID // Update main ID to latest active one
-	} else {
-		// Incoming sub is NOT active (canceled/past_due/etc)
-		// Check if the OTHER tracked sub is still potentially active
-		// Note: We can't easily check Stripe here without another API call, 
-		// but we can at least avoid overwriting if the incoming ID is NOT the one we currently think is main.
-		
-		isMainSub := (sub.ID == existingSub.StripePlanSubscriptionID || existingSub.StripePlanSubscriptionID == "")
-		if isMainSub {
+	// Common updates: status and period should be derived from PLAN subscription only.
+	if subType == "plan" {
+		isTrackedPlan := existingSub.StripePlanSubscriptionID == sub.ID || prevPlanSubID == sub.ID
+		if isTrackedPlan {
 			existingSub.Status = status
+			existingSub.StripeSubscriptionID = sub.ID
+			existingSub.CurrentPeriodStart = time.Unix(sub.CurrentPeriodStart, 0)
+			existingSub.CurrentPeriodEnd = time.Unix(sub.CurrentPeriodEnd, 0)
 		}
-		// If it's NOT the main sub (e.g. an old sub or separate addon), 
-		// we don't necessarily want to mark the WHOLE account as canceled if the plan sub is still there.
 	}
 
 	existingSub.StripeCustomerID = sub.Customer.ID
-	existingSub.CurrentPeriodStart = time.Unix(sub.CurrentPeriodStart, 0)
-	existingSub.CurrentPeriodEnd = time.Unix(sub.CurrentPeriodEnd, 0)
 
 	h.subRepo.Save(ctx, existingSub)
 
@@ -587,12 +612,12 @@ func (h *WebhookHandler) preventDuplicateCard(ctx context.Context, customerID, n
 	// 3. Check for duplicates
 	for _, pm := range pms {
 		if pm.ID != newPM.ID && pm.Card != nil && pm.Card.Fingerprint == newPM.Card.Fingerprint {
-			slog.Warn("duplicate card detected, detaching new payment method", 
-				"customerID", customerID, 
-				"newPMID", newPM.ID, 
+			slog.Warn("duplicate card detected, detaching new payment method",
+				"customerID", customerID,
+				"newPMID", newPM.ID,
 				"existingPMID", pm.ID,
 				"fingerprint", newPM.Card.Fingerprint)
-			
+
 			_, err := h.stripePort.DetachPaymentMethod(ctx, newPM.ID)
 			if err != nil {
 				return fmt.Errorf("detach duplicate payment method: %w", err)

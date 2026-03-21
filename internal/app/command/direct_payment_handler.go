@@ -3,9 +3,9 @@ package command
 import (
 	"context"
 
+	"github.com/stripe/stripe-go/v76"
 	"github.com/teachingassistant/billing-service/internal/app"
 	"github.com/teachingassistant/billing-service/internal/domain"
-	"github.com/stripe/stripe-go/v76"
 )
 
 type DirectChargeHandler struct {
@@ -18,11 +18,11 @@ func NewDirectChargeHandler(stripePort app.StripePort, subRepo domain.Subscripti
 }
 
 type DirectChargeCmd struct {
-	UserID         string `json:"userId"`
-	PriceRef       string `json:"priceRef"`
-	Quantity       int    `json:"quantity"`
+	UserID          string `json:"userId"`
+	PriceRef        string `json:"priceRef"`
+	Quantity        int    `json:"quantity"`
 	PaymentMethodID string `json:"paymentMethodId"`
-	IdempotencyKey string `json:"idempotencyKey"`
+	IdempotencyKey  string `json:"idempotencyKey"`
 }
 
 func (h *DirectChargeHandler) Handle(ctx context.Context, cmd DirectChargeCmd) (*stripe.PaymentIntent, error) {
@@ -34,7 +34,7 @@ func (h *DirectChargeHandler) Handle(ctx context.Context, cmd DirectChargeCmd) (
 	if sub == nil || sub.StripeCustomerID == "" {
 		return nil, domain.ErrSubscriptionNotFound
 	}
-	
+
 	metadata := map[string]string{
 		"userId": cmd.UserID,
 	}
@@ -52,11 +52,11 @@ func NewDirectSubscriptionHandler(stripePort app.StripePort, subRepo domain.Subs
 }
 
 type DirectSubscriptionCmd struct {
-	UserID         string `json:"userId"`
-	PriceRef       string `json:"priceRef"`
-	SubType        string `json:"subType"` // "plan" or "storage"
+	UserID          string `json:"userId"`
+	PriceRef        string `json:"priceRef"`
+	SubType         string `json:"subType"` // "plan" or "storage"
 	PaymentMethodID string `json:"paymentMethodId"`
-	IdempotencyKey string `json:"idempotencyKey"`
+	IdempotencyKey  string `json:"idempotencyKey"`
 }
 
 func (h *DirectSubscriptionHandler) Handle(ctx context.Context, cmd DirectSubscriptionCmd) (*stripe.Subscription, error) {
@@ -67,13 +67,6 @@ func (h *DirectSubscriptionHandler) Handle(ctx context.Context, cmd DirectSubscr
 	}
 	if sub == nil || sub.StripeCustomerID == "" {
 		return nil, domain.ErrSubscriptionNotFound
-	}
-
-	// Pre-emptive cancellation of existing subscription of the same type
-	if cmd.SubType == "plan" && sub.StripePlanSubscriptionID != "" {
-		h.stripePort.CancelSubscription(ctx, sub.StripePlanSubscriptionID)
-	} else if cmd.SubType == "storage" && sub.StripeStorageSubscriptionID != "" {
-		h.stripePort.CancelSubscription(ctx, sub.StripeStorageSubscriptionID)
 	}
 
 	metadata := map[string]string{

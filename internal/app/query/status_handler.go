@@ -3,8 +3,8 @@ package query
 import (
 	"context"
 	"log/slog"
-	"time"
 	"math"
+	"time"
 
 	"github.com/teachingassistant/billing-service/internal/app"
 	"github.com/teachingassistant/billing-service/internal/domain"
@@ -24,19 +24,19 @@ type BillingStatusDTO struct {
 		StripeCustomerID     string    `json:"stripeCustomerId,omitempty"`
 	} `json:"subscription"`
 	Usage struct {
-		MonthlyAIUsed   int `json:"monthlyAiUsed"`
-		MonthlyAILimit  int `json:"monthlyAiLimit"`
-		PurchasedAIUsed int `json:"purchasedAiUsed"`
+		MonthlyAIUsed    int `json:"monthlyAiUsed"`
+		MonthlyAILimit   int `json:"monthlyAiLimit"`
+		PurchasedAIUsed  int `json:"purchasedAiUsed"`
 		PurchasedAITotal int `json:"purchasedAiTotal"`
-		
-		MonthlyStorageUsed  int `json:"monthlyStorageUsed"`
-		MonthlyStorageLimit int `json:"monthlyStorageLimit"`
-		PurchasedStorageUsed int `json:"purchasedStorageUsed"`
+
+		MonthlyStorageUsed    int `json:"monthlyStorageUsed"`
+		MonthlyStorageLimit   int `json:"monthlyStorageLimit"`
+		PurchasedStorageUsed  int `json:"purchasedStorageUsed"`
 		PurchasedStorageTotal int `json:"purchasedStorageTotal"`
 	} `json:"usage"`
 	AIAddons      []app.CreditPackDTO `json:"aiAddons"`
 	StorageAddons []app.CreditPackDTO `json:"storageAddons"`
-	Wallet struct {
+	Wallet        struct {
 		LiquidBalance int `json:"liquidBalance"`
 		PlanBalance   int `json:"planBalance"`
 	} `json:"wallet"`
@@ -84,6 +84,8 @@ func (h *GetBillingStatusHandler) Handle(ctx context.Context, userID string) (*B
 	}
 
 	dto := &BillingStatusDTO{}
+	dto.AIAddons = []app.CreditPackDTO{}
+	dto.StorageAddons = []app.CreditPackDTO{}
 	dto.Subscription.PlanID = sub.PlanID
 	dto.Subscription.PlanName = sub.PlanName
 	dto.Subscription.Status = string(sub.Status)
@@ -92,13 +94,17 @@ func (h *GetBillingStatusHandler) Handle(ctx context.Context, userID string) (*B
 	dto.Subscription.BaseAILimit = sub.BaseAILimit
 	dto.Subscription.BaseStorageQuota = sub.BaseStorageQuota
 	dto.Subscription.AddonStorageQuota = sub.AddonStorageQuota
-	dto.Subscription.StripeSubscriptionID = sub.StripeSubscriptionID
+	if sub.StripePlanSubscriptionID != "" {
+		dto.Subscription.StripeSubscriptionID = sub.StripePlanSubscriptionID
+	} else {
+		dto.Subscription.StripeSubscriptionID = sub.StripeSubscriptionID
+	}
 	dto.Subscription.StripeCustomerID = sub.StripeCustomerID
 
 	dto.Usage.MonthlyAIUsed = int(math.Min(float64(aiUsed), float64(sub.BaseAILimit)))
 	dto.Usage.MonthlyAILimit = sub.BaseAILimit
 	dto.Usage.PurchasedAIUsed = int(math.Max(0, float64(aiUsed-sub.BaseAILimit)))
-	
+
 	purchasedAITotal := 0
 	for _, pack := range wallet.CreditPacks {
 		if pack.Type == "ai" {

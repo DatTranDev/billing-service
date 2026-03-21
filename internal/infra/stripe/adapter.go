@@ -2,20 +2,21 @@ package stripe
 
 import (
 	"context"
-	"github.com/teachingassistant/billing-service/internal/app"
-	"github.com/teachingassistant/billing-service/internal/domain"
+	"fmt"
+
 	"github.com/stripe/stripe-go/v76"
 	portalsession "github.com/stripe/stripe-go/v76/billingportal/session"
 	"github.com/stripe/stripe-go/v76/checkout/session"
 	"github.com/stripe/stripe-go/v76/customer"
-	"github.com/stripe/stripe-go/v76/paymentmethod"
-	"github.com/stripe/stripe-go/v76/subscription"
-	"fmt"
-	"github.com/stripe/stripe-go/v76/price"
-	"github.com/stripe/stripe-go/v76/setupintent"
 	"github.com/stripe/stripe-go/v76/invoice"
 	"github.com/stripe/stripe-go/v76/paymentintent"
+	"github.com/stripe/stripe-go/v76/paymentmethod"
+	"github.com/stripe/stripe-go/v76/price"
 	"github.com/stripe/stripe-go/v76/product"
+	"github.com/stripe/stripe-go/v76/setupintent"
+	"github.com/stripe/stripe-go/v76/subscription"
+	"github.com/teachingassistant/billing-service/internal/app"
+	"github.com/teachingassistant/billing-service/internal/domain"
 )
 
 type StripeAdapter struct {
@@ -158,7 +159,7 @@ func (a *StripeAdapter) GetSessionLineItems(ctx context.Context, sessionID strin
 	var items []app.LineItem
 	for i.Next() {
 		li := i.LineItem()
-		
+
 		metadata := make(map[string]string)
 		if li.Price != nil && li.Price.Product != nil {
 			for k, v := range li.Price.Product.Metadata {
@@ -251,6 +252,9 @@ func (a *StripeAdapter) UpdateSubscription(ctx context.Context, subID string, pa
 func (a *StripeAdapter) CancelSubscription(ctx context.Context, subID string) (*stripe.Subscription, error) {
 	params := &stripe.SubscriptionCancelParams{}
 	params.Context = ctx
+	// Apply immediate proration adjustments when replacing plans.
+	params.Prorate = stripe.Bool(true)
+	params.InvoiceNow = stripe.Bool(true)
 	sub, err := subscription.Cancel(subID, params)
 	if err == nil && a.cacheRepo != nil {
 		a.cacheRepo.Delete(ctx, subID)
@@ -580,7 +584,7 @@ func (a *StripeAdapter) resolvePriceID(ctx context.Context, priceRef string) (st
 		return i.Price().ID, nil
 	}
 
-	if err := i.Err(); err != nil{
+	if err := i.Err(); err != nil {
 		return "", err
 	}
 
@@ -599,10 +603,10 @@ func (a *StripeAdapter) listActiveProducts(ctx context.Context, types ...string)
 	prodParams := &stripe.ProductListParams{}
 	prodParams.Active = stripe.Bool(true)
 	prodParams.Context = ctx
-	
+
 	i := product.List(prodParams)
 	var plans []app.PlanDTO
-	
+
 	typeMap := make(map[string]bool)
 	for _, t := range types {
 		typeMap[t] = true
@@ -615,26 +619,26 @@ func (a *StripeAdapter) listActiveProducts(ctx context.Context, types ...string)
 		if !typeMap[t] {
 			continue
 		}
-		
+
 		plan := app.PlanDTO{
 			ID:          p.ID,
 			Name:        p.Name,
 			Description: p.Description,
 			Metadata:    p.Metadata,
 		}
-		
+
 		// Extract features from metadata if present
 		if features, ok := p.Metadata["features"]; ok {
-			plan.Features = []string{features} 
+			plan.Features = []string{features}
 		}
-		
+
 		// 2. Fetch prices for this product
 		priceParams := &stripe.PriceListParams{
 			Product: stripe.String(p.ID),
 			Active:  stripe.Bool(true),
 		}
 		priceParams.Context = ctx
-		
+
 		pi := price.List(priceParams)
 		for pi.Next() {
 			pr := pi.Price()
@@ -642,7 +646,7 @@ func (a *StripeAdapter) listActiveProducts(ctx context.Context, types ...string)
 			if pr.Recurring != nil {
 				interval = string(pr.Recurring.Interval)
 			}
-			
+
 			plan.Prices = append(plan.Prices, app.PriceDTO{
 				ID:         pr.ID,
 				LookupKey:  pr.LookupKey,
@@ -653,10 +657,10 @@ func (a *StripeAdapter) listActiveProducts(ctx context.Context, types ...string)
 				Metadata:   pr.Metadata,
 			})
 		}
-		
+
 		plans = append(plans, plan)
 	}
-	
+
 	if err := i.Err(); err != nil {
 		return nil, err
 	}
