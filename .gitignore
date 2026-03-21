@@ -27,6 +27,9 @@ go.work.sum
 # Environment files
 .env
 
+# Local server build artifact
+cmd/server/app
+
 # Editor/IDE specific files (Optional, or move to global gitignore)
 .idea/
 .vscode/

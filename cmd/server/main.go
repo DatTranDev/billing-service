@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"os"
+	"strings"
 
 	"log/slog"
 
@@ -58,6 +59,11 @@ func Run() {
 	userRepo := mongo.NewUserRepository(testDb)
 
 	stripeAdapter := stripe.NewStripeAdapter(os.Getenv("STRIPE_API_KEY"), cacheRepo)
+	allowOrigins := parseAllowOrigins(os.Getenv("CORS_ALLOW_ORIGINS"))
+	jwtSecret := os.Getenv("BILLING_JWT_SECRET")
+	if strings.TrimSpace(jwtSecret) == "" {
+		jwtSecret = os.Getenv("SECRET_KEY")
+	}
 
 	// 2. Application Layer (CQRS) Setup
 	createCheckoutCmd := command.NewCreateCheckoutSessionHandler(stripeAdapter, subRepo)
@@ -126,14 +132,15 @@ func Run() {
 		},
 	}))
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
-		AllowOrigins:     []string{"http://localhost:3000", "http://localhost:3001"},
+		AllowOrigins:     allowOrigins,
 		AllowMethods:     []string{stdhttp.MethodGet, stdhttp.MethodPost, stdhttp.MethodOptions, stdhttp.MethodDelete},
 		AllowHeaders:     []string{"Content-Type", "Authorization"},
 		AllowCredentials: true,
 	}))
 	e.Use(middleware.Recover())
 
-	billing := e.Group("/api/v2/billing")
+	publicBilling := e.Group("/api/v2/billing")
+	billing := e.Group("/api/v2/billing", http.RequireAuthMiddleware(jwtSecret))
 	billing.POST("/checkout", handler.CreateCheckout)
 	billing.POST("/addon", handler.CreateAddon)
 	billing.GET("/balance", handler.GetBalance)
@@ -143,8 +150,8 @@ func Run() {
 	billing.GET("/sync-customer", handler.SyncCustomer) // Changed POST to GET if it was intended to be GET, but keeping as is for now if it was POST
 	billing.POST("/sync-customer", handler.SyncCustomer)
 	billing.GET("/status", handler.GetStatus)
-	billing.GET("/plans", handler.GetPlans)
-	billing.GET("/addons", handler.GetAddons)
+	publicBilling.GET("/plans", handler.GetPlans)
+	publicBilling.GET("/addons", handler.GetAddons)
 	billing.GET("/user-addons", handler.GetUserAddons)
 	billing.GET("/usage-log", handler.GetUsageLog)
 	billing.POST("/setup-intent", handler.CreateSetupIntent)
@@ -154,7 +161,7 @@ func Run() {
 	billing.GET("/invoices", handler.ListInvoices)
 	billing.POST("/charge", handler.DirectCharge)
 	billing.POST("/subscribe", handler.DirectSubscription)
-	billing.POST("/webhook", webhookHandler.Handle)
+	publicBilling.POST("/webhook", webhookHandler.Handle)
 
 	e.GET("/swagger/*", func(c *echo.Context) error {
 		httpSwagger.Handler(
@@ -171,4 +178,16 @@ func Run() {
 	if err := e.Start(":" + port); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func parseAllowOrigins(raw string) []string {
+	parts := strings.Split(raw, ",")
+	origins := make([]string, 0, len(parts))
+	for _, part := range parts {
+		origin := strings.TrimSpace(part)
+		if origin != "" {
+			origins = append(origins, origin)
+		}
+	}
+	return origins
 }
