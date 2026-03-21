@@ -161,9 +161,15 @@ func (a *StripeAdapter) GetSessionLineItems(ctx context.Context, sessionID strin
 		li := i.LineItem()
 
 		metadata := make(map[string]string)
-		if li.Price != nil && li.Price.Product != nil {
-			for k, v := range li.Price.Product.Metadata {
+		if li.Price != nil {
+			for k, v := range li.Price.Metadata {
 				metadata[k] = v
+			}
+
+			if li.Price.Product != nil {
+				for k, v := range li.Price.Product.Metadata {
+					metadata[k] = v
+				}
 			}
 		}
 

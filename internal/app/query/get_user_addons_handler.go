@@ -11,10 +11,11 @@ import (
 // GetUserAddonsHandler returns the credit packs (AI & storage) owned by a user.
 type GetUserAddonsHandler struct {
 	walletRepo domain.WalletRepository
+	subRepo    domain.SubscriptionRepository
 }
 
-func NewGetUserAddonsHandler(walletRepo domain.WalletRepository) *GetUserAddonsHandler {
-	return &GetUserAddonsHandler{walletRepo: walletRepo}
+func NewGetUserAddonsHandler(walletRepo domain.WalletRepository, subRepo domain.SubscriptionRepository) *GetUserAddonsHandler {
+	return &GetUserAddonsHandler{walletRepo: walletRepo, subRepo: subRepo}
 }
 
 type UserAddonsDTO struct {
@@ -26,6 +27,11 @@ func (h *GetUserAddonsHandler) Handle(ctx context.Context, userID string) (*User
 	wallet, err := h.walletRepo.GetByUserID(ctx, userID)
 	if err != nil {
 		wallet = &domain.Wallet{UserID: userID}
+	}
+
+	sub, err := h.subRepo.GetByUserID(ctx, userID)
+	if err != nil {
+		sub = nil
 	}
 
 	dto := &UserAddonsDTO{
@@ -53,5 +59,20 @@ func (h *GetUserAddonsHandler) Handle(ctx context.Context, userID string) (*User
 			dto.StoragePacks = append(dto.StoragePacks, cdto)
 		}
 	}
+
+	if sub != nil && sub.AddonStorageQuota > 0 {
+		hasStoragePack := len(dto.StoragePacks) > 0
+		if !hasStoragePack {
+			dto.StoragePacks = append(dto.StoragePacks, app.CreditPackDTO{
+				ID:              "sub_storage_quota",
+				TotalAmount:     sub.AddonStorageQuota,
+				RemainingAmount: sub.AddonStorageQuota,
+				Type:            "storage",
+				PurchasedAt:     sub.CurrentPeriodStart,
+				ExpiresAt:       sub.CurrentPeriodEnd,
+			})
+		}
+	}
+
 	return dto, nil
 }

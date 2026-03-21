@@ -68,10 +68,9 @@ func Run() {
 	// 2. Application Layer (CQRS) Setup
 	createCheckoutCmd := command.NewCreateCheckoutSessionHandler(stripeAdapter, subRepo)
 	createAddonCmd := command.NewCreateAddonSessionHandler(stripeAdapter, subRepo)
+	consumeUsageCmd := command.NewConsumeUsageHandler(walletRepo, subRepo, usageRepo)
 	createPortalCmd := command.NewCreatePortalSessionHandler(stripeAdapter, subRepo)
 	setupFreeTierCmd := command.NewSetupFreeTierHandler(stripeAdapter, subRepo, walletRepo)
-	deductCreditsCmd := command.NewDeductCreditsHandler(walletRepo)
-    _ = deductCreditsCmd
  
 	getBalanceQuery := query.NewGetWalletBalanceHandler(walletRepo)
 	checkUsageQuery := query.NewCheckUsageHandler(walletRepo, subRepo, usageRepo)
@@ -84,7 +83,7 @@ func Run() {
 	directSubCmd := command.NewDirectSubscriptionHandler(stripeAdapter, subRepo)
 	getPlansQuery := query.NewGetPlansHandler(stripeAdapter)
 	getAddonsQuery := query.NewGetAddonsHandler(stripeAdapter)
-	getUserAddonsQuery := query.NewGetUserAddonsHandler(walletRepo)
+	getUserAddonsQuery := query.NewGetUserAddonsHandler(walletRepo, subRepo)
 	getUsageLogQuery := query.NewGetUsageLogHandler(usageRepo)
 
 	// Start Background Workers
@@ -98,6 +97,7 @@ func Run() {
 	handler := http.NewBillingHandler(
 		createCheckoutCmd,
 		createAddonCmd,
+		consumeUsageCmd,
 		getBalanceQuery,
 		checkUsageQuery,
 		createPortalCmd,
@@ -145,6 +145,7 @@ func Run() {
 	billing.POST("/addon", handler.CreateAddon)
 	billing.GET("/balance", handler.GetBalance)
 	billing.GET("/check-usage", handler.CheckUsage)
+	billing.POST("/deduct", handler.DeductUsage)
 	billing.POST("/portal", handler.CreatePortal)
 	billing.POST("/setup-free-tier", handler.SetupFreeTier)
 	billing.GET("/sync-customer", handler.SyncCustomer) // Changed POST to GET if it was intended to be GET, but keeping as is for now if it was POST

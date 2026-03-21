@@ -1,20 +1,23 @@
 package http
 
 import (
+	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
+
+	"github.com/labstack/echo/v5"
+	"github.com/stripe/stripe-go/v76"
 	"github.com/teachingassistant/billing-service/internal/app"
 	"github.com/teachingassistant/billing-service/internal/app/command"
 	"github.com/teachingassistant/billing-service/internal/app/query"
-	"github.com/stripe/stripe-go/v76"
 	"github.com/teachingassistant/billing-service/internal/domain"
-	"github.com/labstack/echo/v5"
-	"log/slog"
 )
 
 type BillingHandler struct {
 	createCheckoutCmd   *command.CreateCheckoutSessionHandler
 	createAddonCmd      *command.CreateAddonSessionHandler
+	consumeUsageCmd     *command.ConsumeUsageHandler
 	getBalanceQuery     *query.GetWalletBalanceHandler
 	checkUsageQuery     *query.CheckUsageHandler
 	createPortalCmd     *command.CreatePortalSessionHandler
@@ -36,6 +39,7 @@ type BillingHandler struct {
 func NewBillingHandler(
 	createCheckoutCmd *command.CreateCheckoutSessionHandler,
 	createAddonCmd *command.CreateAddonSessionHandler,
+	consumeUsageCmd *command.ConsumeUsageHandler,
 	getBalanceQuery *query.GetWalletBalanceHandler,
 	checkUsageQuery *query.CheckUsageHandler,
 	createPortalCmd *command.CreatePortalSessionHandler,
@@ -56,6 +60,7 @@ func NewBillingHandler(
 	return &BillingHandler{
 		createCheckoutCmd: createCheckoutCmd,
 		createAddonCmd:    createAddonCmd,
+		consumeUsageCmd:   consumeUsageCmd,
 		getBalanceQuery:   getBalanceQuery,
 		checkUsageQuery:   checkUsageQuery,
 		createPortalCmd:   createPortalCmd,
@@ -254,9 +259,14 @@ func (h *BillingHandler) CheckUsage(c *echo.Context) error {
 		return (*c).JSON(http.StatusBadRequest, map[string]string{"error": "userId is required"})
 	}
 
-	usageType := (*c).QueryParam("type")
-	if usageType == "" {
+	rawUsageType := (*c).QueryParam("type")
+	if rawUsageType == "" {
 		return (*c).JSON(http.StatusBadRequest, map[string]string{"error": "type is required"})
+	}
+
+	usageType, ok := parseUsageType(rawUsageType)
+	if !ok {
+		return (*c).JSON(http.StatusBadRequest, map[string]string{"error": "invalid type"})
 	}
 
 	amountStr := (*c).QueryParam("amount")
@@ -269,15 +279,72 @@ func (h *BillingHandler) CheckUsage(c *echo.Context) error {
 		}
 	}
 
-	err := h.checkUsageQuery.Handle((*c).Request().Context(), userID, domain.UsageType(usageType), amount)
+	if amount <= 0 {
+		return (*c).JSON(http.StatusBadRequest, map[string]string{"error": "amount must be greater than 0"})
+	}
+
+	err := h.checkUsageQuery.Handle((*c).Request().Context(), userID, usageType, amount)
 	if err != nil {
 		if err == query.ErrUsageExceeded {
-			return (*c).JSON(http.StatusPaymentRequired, map[string]string{"error": err.Error()})
+			return (*c).JSON(http.StatusPaymentRequired, map[string]interface{}{"allowed": false, "error": err.Error()})
+		}
+		return (*c).JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+
+	return (*c).JSON(http.StatusOK, map[string]interface{}{"status": "ok", "allowed": true})
+}
+
+func (h *BillingHandler) DeductUsage(c *echo.Context) error {
+	var req struct {
+		UserID      string `json:"userId"`
+		Type        string `json:"type"`
+		Amount      int    `json:"amount"`
+		Description string `json:"description"`
+	}
+
+	if err := (*c).Bind(&req); err != nil {
+		return (*c).JSON(http.StatusBadRequest, map[string]string{"error": "invalid request"})
+	}
+
+	if strings.TrimSpace(req.UserID) == "" {
+		return (*c).JSON(http.StatusBadRequest, map[string]string{"error": "userId is required"})
+	}
+
+	if req.Amount <= 0 {
+		req.Amount = 1
+	}
+
+	rawType := strings.TrimSpace(req.Type)
+	if rawType == "" {
+		rawType = "ai_credits"
+	}
+
+	usageType, ok := parseUsageType(rawType)
+	if !ok {
+		return (*c).JSON(http.StatusBadRequest, map[string]string{"error": "invalid type"})
+	}
+
+	err := h.consumeUsageCmd.Handle((*c).Request().Context(), req.UserID, usageType, req.Amount, req.Description)
+	if err != nil {
+		if err == command.ErrUsageExceeded {
+			return (*c).JSON(http.StatusPaymentRequired, map[string]interface{}{"status": "failed", "allowed": false, "error": err.Error()})
 		}
 		return (*c).JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
 	return (*c).JSON(http.StatusOK, map[string]interface{}{"status": "ok"})
+}
+
+func parseUsageType(raw string) (domain.UsageType, bool) {
+	normalized := strings.ToUpper(strings.TrimSpace(raw))
+	switch normalized {
+	case "AI_TOKEN", "AI_TOKENS", "AI_CREDIT", "AI_CREDITS":
+		return domain.UsageTypeAITokens, true
+	case "STORAGE", "STORAGE_BYTE", "STORAGE_BYTES":
+		return domain.UsageTypeStorageByte, true
+	default:
+		return "", false
+	}
 }
 
 // CreatePortal godoc
