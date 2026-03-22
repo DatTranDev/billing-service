@@ -115,7 +115,7 @@ func Run() {
 		getUsageLogQuery,
 		userRepo,
 	)
-	webhookHandler := http.NewWebhookHandler(stripeAdapter, eventRepo, subRepo, walletRepo, ledgerRepo)
+	webhookHandler := http.NewWebhookHandler(stripeAdapter, eventRepo, subRepo, walletRepo, ledgerRepo, cacheRepo)
 
 	e := echo.New()
 	e.Use(middleware.RequestLoggerWithConfig(middleware.RequestLoggerConfig{

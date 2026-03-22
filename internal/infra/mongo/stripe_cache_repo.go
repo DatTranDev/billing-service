@@ -39,6 +39,20 @@ func (r *StripeCacheRepository) GetByID(ctx context.Context, id string) (*domain
 	}
 	return &entry, err
 }
+ 
+func (r *StripeCacheRepository) GetByType(ctx context.Context, objType domain.StripeObjectType) ([]*domain.StripeCacheEntry, error) {
+	cursor, err := r.collection.Find(ctx, bson.M{"type": objType})
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+ 
+	var entries []*domain.StripeCacheEntry
+	if err := cursor.All(ctx, &entries); err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
 
 func (r *StripeCacheRepository) Delete(ctx context.Context, id string) error {
 	_, err := r.collection.DeleteOne(ctx, bson.M{"id": id})

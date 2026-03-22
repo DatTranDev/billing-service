@@ -25,6 +25,7 @@ type WebhookHandler struct {
 	subRepo    domain.SubscriptionRepository
 	walletRepo domain.WalletRepository
 	ledgerRepo domain.LedgerRepository
+	cacheRepo  domain.StripeCacheRepository
 }
 
 func NewWebhookHandler(
@@ -33,6 +34,7 @@ func NewWebhookHandler(
 	subRepo domain.SubscriptionRepository,
 	walletRepo domain.WalletRepository,
 	ledgerRepo domain.LedgerRepository,
+	cacheRepo domain.StripeCacheRepository,
 ) *WebhookHandler {
 	return &WebhookHandler{
 		stripePort: stripePort,
@@ -40,6 +42,7 @@ func NewWebhookHandler(
 		subRepo:    subRepo,
 		walletRepo: walletRepo,
 		ledgerRepo: ledgerRepo,
+		cacheRepo:  cacheRepo,
 	}
 }
 
@@ -147,6 +150,12 @@ func (h *WebhookHandler) processEvent(ctx context.Context, event stripe.Event) e
 
 	case "setup_intent.succeeded":
 		return h.handleSetupIntentSucceeded(ctx, event)
+
+	case "product.created", "product.updated", "product.deleted":
+		return h.handleProductEvent(ctx, event)
+
+	case "price.created", "price.updated", "price.deleted":
+		return h.handlePriceEvent(ctx, event)
 
 	default:
 		slog.Info("unhandled stripe event type", "type", event.Type)
@@ -627,4 +636,45 @@ func (h *WebhookHandler) preventDuplicateCard(ctx context.Context, customerID, n
 	}
 
 	return nil
+}
+func (h *WebhookHandler) handleProductEvent(ctx context.Context, event stripe.Event) error {
+	var p stripe.Product
+	if err := json.Unmarshal(event.Data.Raw, &p); err != nil {
+		return fmt.Errorf("unmarshal product: %w", err)
+	}
+
+	if h.cacheRepo == nil {
+		return nil
+	}
+
+	if event.Type == "product.deleted" {
+		return h.cacheRepo.Delete(ctx, p.ID)
+	}
+
+	return h.cacheRepo.Save(ctx, &domain.StripeCacheEntry{
+		ID:   p.ID,
+		Type: domain.StripeObjectProduct,
+		Data: &p,
+	})
+}
+
+func (h *WebhookHandler) handlePriceEvent(ctx context.Context, event stripe.Event) error {
+	var p stripe.Price
+	if err := json.Unmarshal(event.Data.Raw, &p); err != nil {
+		return fmt.Errorf("unmarshal price: %w", err)
+	}
+
+	if h.cacheRepo == nil {
+		return nil
+	}
+
+	if event.Type == "price.deleted" {
+		return h.cacheRepo.Delete(ctx, p.ID)
+	}
+
+	return h.cacheRepo.Save(ctx, &domain.StripeCacheEntry{
+		ID:   p.ID,
+		Type: domain.StripeObjectPrice,
+		Data: &p,
+	})
 }

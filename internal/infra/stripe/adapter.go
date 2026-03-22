@@ -605,7 +605,65 @@ func (a *StripeAdapter) ListActiveAddons(ctx context.Context) ([]app.PlanDTO, er
 }
 
 func (a *StripeAdapter) listActiveProducts(ctx context.Context, types ...string) ([]app.PlanDTO, error) {
-	// 1. Fetch active products
+	typeMap := make(map[string]bool)
+	for _, t := range types {
+		typeMap[t] = true
+	}
+
+	// 1. Try to fetch from cache first
+	if a.cacheRepo != nil {
+		cachedProds, _ := a.cacheRepo.GetByType(ctx, domain.StripeObjectProduct)
+		if len(cachedProds) > 0 {
+			cachedPrices, _ := a.cacheRepo.GetByType(ctx, domain.StripeObjectPrice)
+			priceMap := make(map[string][]app.PriceDTO)
+
+			for _, cp := range cachedPrices {
+				if pr, ok := cp.Data.(*stripe.Price); ok {
+					interval := ""
+					if pr.Recurring != nil {
+						interval = string(pr.Recurring.Interval)
+					}
+					priceMap[pr.Product.ID] = append(priceMap[pr.Product.ID], app.PriceDTO{
+						ID:         pr.ID,
+						LookupKey:  pr.LookupKey,
+						UnitAmount: pr.UnitAmount,
+						Currency:   string(pr.Currency),
+						Interval:   interval,
+						Nickname:   pr.Nickname,
+						Metadata:   pr.Metadata,
+					})
+				}
+			}
+
+			var plans []app.PlanDTO
+			for _, cp := range cachedProds {
+				if p, ok := cp.Data.(*stripe.Product); ok && p.Active {
+					t := p.Metadata["type"]
+					if !typeMap[t] {
+						continue
+					}
+
+					plan := app.PlanDTO{
+						ID:          p.ID,
+						Name:        p.Name,
+						Description: p.Description,
+						Metadata:    p.Metadata,
+						Prices:      priceMap[p.ID],
+					}
+					if features, ok := p.Metadata["features"]; ok {
+						plan.Features = []string{features}
+					}
+					plans = append(plans, plan)
+				}
+			}
+
+			if len(plans) > 0 {
+				return plans, nil
+			}
+		}
+	}
+
+	// 2. Fallback to fetch from Stripe API and populate cache
 	prodParams := &stripe.ProductListParams{}
 	prodParams.Active = stripe.Bool(true)
 	prodParams.Context = ctx
@@ -613,14 +671,18 @@ func (a *StripeAdapter) listActiveProducts(ctx context.Context, types ...string)
 	i := product.List(prodParams)
 	var plans []app.PlanDTO
 
-	typeMap := make(map[string]bool)
-	for _, t := range types {
-		typeMap[t] = true
-	}
-
 	for i.Next() {
 		p := i.Product()
-		// Filter by metadata type
+
+		// Cache product
+		if a.cacheRepo != nil {
+			a.cacheRepo.Save(ctx, &domain.StripeCacheEntry{
+				ID:   p.ID,
+				Type: domain.StripeObjectProduct,
+				Data: p,
+			})
+		}
+
 		t := p.Metadata["type"]
 		if !typeMap[t] {
 			continue
@@ -633,12 +695,11 @@ func (a *StripeAdapter) listActiveProducts(ctx context.Context, types ...string)
 			Metadata:    p.Metadata,
 		}
 
-		// Extract features from metadata if present
 		if features, ok := p.Metadata["features"]; ok {
 			plan.Features = []string{features}
 		}
 
-		// 2. Fetch prices for this product
+		// Fetch prices for this product
 		priceParams := &stripe.PriceListParams{
 			Product: stripe.String(p.ID),
 			Active:  stripe.Bool(true),
@@ -648,6 +709,16 @@ func (a *StripeAdapter) listActiveProducts(ctx context.Context, types ...string)
 		pi := price.List(priceParams)
 		for pi.Next() {
 			pr := pi.Price()
+
+			// Cache price
+			if a.cacheRepo != nil {
+				a.cacheRepo.Save(ctx, &domain.StripeCacheEntry{
+					ID:   pr.ID,
+					Type: domain.StripeObjectPrice,
+					Data: pr,
+				})
+			}
+
 			interval := ""
 			if pr.Recurring != nil {
 				interval = string(pr.Recurring.Interval)
@@ -672,3 +743,4 @@ func (a *StripeAdapter) listActiveProducts(ctx context.Context, types ...string)
 	}
 	return plans, nil
 }
+
