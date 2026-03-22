@@ -619,11 +619,19 @@ func (a *StripeAdapter) listActiveProducts(ctx context.Context, types ...string)
 
 			for _, cp := range cachedPrices {
 				if pr, ok := cp.Data.(*stripe.Price); ok {
+					productID := ""
+					if pr.Product != nil {
+						productID = pr.Product.ID
+					}
+					if productID == "" {
+						continue
+					}
+
 					interval := ""
 					if pr.Recurring != nil {
 						interval = string(pr.Recurring.Interval)
 					}
-					priceMap[pr.Product.ID] = append(priceMap[pr.Product.ID], app.PriceDTO{
+					priceMap[productID] = append(priceMap[productID], app.PriceDTO{
 						ID:         pr.ID,
 						LookupKey:  pr.LookupKey,
 						UnitAmount: pr.UnitAmount,
